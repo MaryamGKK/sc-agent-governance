@@ -1,3 +1,24 @@
+# ✅ Production-Ready GenAI Agent Development Checklist
+
+## 🛠️ Tooling
+- [ ] Are all your tools and functions access-controlled with fine-grained ACLs?
+- [ ] Do you have metadata (ownership, version history) for every tool?
+- [ ] Are shared tools and data duplicated across agents?
+
+## 🔄 Lifecycle
+- [ ] Can you hot-swap tools without redeploying your agents?
+- [ ] Do you have separate toolsets and permissions for Dev vs. Prod environments?
+- [ ] Do you provide safe, isolated sandbox environments for development?
+
+## 🔒 Security
+- [ ] Are unsafe modules, system calls, or sensitive access strictly restricted?
+- [ ] Is every function invocation authenticated and audited?
+- [ ] Do agents only access the data they actually need (least privilege)?
+
+## 🔍 Observability
+- [ ] Can you trace all tool usage, decisions, and outputs?
+- [ ] Can you audit who used what, when, and why across all agents?
+
 # SC_Template
 **Objective**: 
 The primary purpose of this Short Courses (SC) repository, **SC-Partner-Cx**, is to enable the instructor, their team and the DLAI team to collaborate on the content before filming, ultimately using the final notebooks here as an instructor guide for filming.
