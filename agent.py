@@ -1,5 +1,4 @@
 from typing import Any, Generator, Optional, Sequence, Union
-import os
 
 import mlflow
 from databricks_langchain import (
@@ -30,10 +29,6 @@ mlflow.langchain.autolog()
 client = DatabricksFunctionClient()
 set_uc_function_client(client)
 
-from databricks.sdk import WorkspaceClient
-
-# Use the workspace client to retrieve information about the current user
-w = WorkspaceClient()
 
 # Catalog and schema have been automatically created thanks to lab environment
 catalog_name = "clientcare"
