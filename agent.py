@@ -1,44 +1,29 @@
-from typing import Any, Generator, Optional, Sequence, Union
+import json
+from typing import Any, Callable, Generator, Optional
+from uuid import uuid4
 
+import backoff
 import mlflow
-from databricks_langchain import (
-    ChatDatabricks,
-    VectorSearchRetrieverTool,
-    DatabricksFunctionClient,
-    UCFunctionToolkit,
-    set_uc_function_client,
+import openai
+from databricks.sdk import WorkspaceClient
+from databricks_openai import UCFunctionToolkit, VectorSearchRetrieverTool
+from mlflow.entities import SpanType
+from mlflow.pyfunc import ResponsesAgent
+from mlflow.types.responses import (
+    ResponsesAgentRequest,
+    ResponsesAgentResponse,
+    ResponsesAgentStreamEvent,
 )
-from langchain_core.language_models import LanguageModelLike
-from langchain_core.runnables import RunnableConfig, RunnableLambda
-from langchain_core.tools import BaseTool
-from langgraph.graph import END, StateGraph
-from langgraph.graph.graph import CompiledGraph
-from langgraph.graph.state import CompiledStateGraph
-from langgraph.prebuilt.tool_node import ToolNode
-from mlflow.langchain.chat_agent_langgraph import ChatAgentState, ChatAgentToolNode
-from mlflow.pyfunc import ChatAgent
-from mlflow.types.agent import (
-    ChatAgentChunk,
-    ChatAgentMessage,
-    ChatAgentResponse,
-    ChatContext,
-)
+from openai import OpenAI
+from pydantic import BaseModel
+from unitycatalog.ai.core.base import get_uc_function_client
 
-mlflow.langchain.autolog()
-
-client = DatabricksFunctionClient()
-set_uc_function_client(client)
-
-
-# Catalog and schema have been automatically created thanks to lab environment
-catalog_name = "clientcare"
 ############################################
 # Define your LLM endpoint and system prompt
 ############################################
 LLM_ENDPOINT_NAME = "databricks-meta-llama-3-3-70b-instruct"
-llm = ChatDatabricks(endpoint=LLM_ENDPOINT_NAME)
 
-system_prompt = """You are an HR Data Scientist and Analytics expert. You have access to HR analytics tools that provide insights into workforce performance, retention, and operational metrics.
+SYSTEM_PROMPT = """You are an HR Data Scientist and Analytics expert. You have access to HR analytics tools that provide insights into workforce performance, retention, and operational metrics.
 
 Your role is to:
 1. Analyze HR data to answer strategic questions about workforce performance and retention
@@ -56,115 +41,252 @@ Available tools:
 - analyze_performance(): Performance, tenure, retention, and compensation analysis
 - analyze_operations(): HR cases, department comparisons, and operational risks"""
 
+
 ###############################################################################
 ## Define tools for your agent, enabling it to retrieve data or take actions
 ## beyond text generation
 ## To create and see usage examples of more tools, see
 ## https://docs.databricks.com/generative-ai/agent-framework/agent-tool.html
 ###############################################################################
-tools = []
+class ToolInfo(BaseModel):
+    """
+    Class representing a tool for the agent.
+    - "name" (str): The name of the tool.
+    - "spec" (dict): JSON description of the tool (matches OpenAI Responses format)
+    - "exec_fn" (Callable): Function that implements the tool logic
+    """
 
-# Catalog and schema have been automatically created thanks to lab environment
-schema_name = "hr_data"
+    name: str
+    spec: dict
+    exec_fn: Callable
+
+
+def create_tool_info(tool_spec, exec_fn_param: Optional[Callable] = None):
+    tool_spec["function"].pop("strict", None)
+    tool_name = tool_spec["function"]["name"]
+    udf_name = tool_name.replace("__", ".")
+
+    # Define a wrapper that accepts kwargs for the UC tool call,
+    # then passes them to the UC tool execution client
+    def exec_fn(**kwargs):
+        function_result = uc_function_client.execute_function(udf_name, kwargs)
+        if function_result.error is not None:
+            return function_result.error
+        else:
+            return function_result.value
+    return ToolInfo(name=tool_name, spec=tool_spec, exec_fn=exec_fn_param or exec_fn)
+
+
+TOOL_INFOS = []
 
 # You can use UDFs in Unity Catalog as agent tools
-uc_tool_names = [f"{catalog_name}.{schema_name}.analyze_operations", f"{catalog_name}.{schema_name}.analyze_performance"]
-uc_toolkit = UCFunctionToolkit(function_names=uc_tool_names)
-tools.extend(uc_toolkit.tools)
+# TODO: Add additional tools
+UC_TOOL_NAMES = ["clientcare.hr_data.analyze_performance", "clientcare.hr_data.analyze_operations"]
 
-#####################
-## Define agent logic
-#####################
+uc_toolkit = UCFunctionToolkit(function_names=UC_TOOL_NAMES)
+uc_function_client = get_uc_function_client()
+for tool_spec in uc_toolkit.tools:
+    TOOL_INFOS.append(create_tool_info(tool_spec))
 
-def create_tool_calling_agent(
-    model: LanguageModelLike,
-    tools: Union[Sequence[BaseTool], ToolNode],
-    system_prompt: Optional[str] = None,
-) -> CompiledGraph:
-    model = model.bind_tools(tools)
 
-    # Define the function that determines which node to go to
-    def should_continue(state: ChatAgentState):
-        messages = state["messages"]
-        last_message = messages[-1]
-        # If there are function calls, continue. else, end
-        if last_message.get("tool_calls"):
-            return "continue"
-        else:
-            return "end"
+# Use Databricks vector search indexes as tools
+# See [docs](https://docs.databricks.com/generative-ai/agent-framework/unstructured-retrieval-tools.html) for details
 
-    if system_prompt:
-        preprocessor = RunnableLambda(
-            lambda state: [{"role": "system", "content": system_prompt}]
-            + state["messages"]
+# # (Optional) Use Databricks vector search indexes as tools
+# # See https://docs.databricks.com/generative-ai/agent-framework/unstructured-retrieval-tools.html
+# # for details
+VECTOR_SEARCH_TOOLS = []
+# # TODO: Add vector search indexes as tools or delete this block
+# VECTOR_SEARCH_TOOLS.append(
+#         VectorSearchRetrieverTool(
+#         index_name="",
+#         # filters="..."
+#     )
+# )
+
+
+
+class ToolCallingAgent(ResponsesAgent):
+    """
+    Class representing a tool-calling Agent
+    """
+
+    def __init__(self, llm_endpoint: str, tools: list[ToolInfo]):
+        """Initializes the ToolCallingAgent with tools."""
+        self.llm_endpoint = llm_endpoint
+        self.workspace_client = WorkspaceClient()
+        self.model_serving_client: OpenAI = (
+            self.workspace_client.serving_endpoints.get_open_ai_client()
         )
-    else:
-        preprocessor = RunnableLambda(lambda state: state["messages"])
-    model_runnable = preprocessor | model
+        # Internal message list holds conversation state in completion-message format
+        self.messages: list[dict[str, Any]] = None
+        self._tools_dict = {tool.name: tool for tool in tools}
 
-    def call_model(
-        state: ChatAgentState,
-        config: RunnableConfig,
-    ):
-        response = model_runnable.invoke(state, config)
+    def get_tool_specs(self) -> list[dict]:
+        """Returns tool specifications in the format OpenAI expects."""
+        return [tool_info.spec for tool_info in self._tools_dict.values()]
 
-        return {"messages": [response]}
+    @mlflow.trace(span_type=SpanType.TOOL)
+    def execute_tool(self, tool_name: str, args: dict) -> Any:
+        """Executes the specified tool with the given arguments."""
+        return self._tools_dict[tool_name].exec_fn(**args)
 
-    workflow = StateGraph(ChatAgentState)
+    def _responses_to_cc(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        """Convert from a Responses API output item to  a list of ChatCompletion messages."""
+        msg_type = message.get("type")
+        if msg_type == "function_call":
+            return [
+                {
+                    "role": "assistant",
+                    "content": "tool call",  # empty content is not supported by claude models
+                    "tool_calls": [
+                        {
+                            "id": message["call_id"],
+                            "type": "function",
+                            "function": {
+                                "arguments": message["arguments"],
+                                "name": message["name"],
+                            },
+                        }
+                    ],
+                }
+            ]
+        elif msg_type == "message" and isinstance(message.get("content"), list):
+            return [
+                {"role": message["role"], "content": content["text"]}
+                for content in message["content"]
+            ]
+        elif msg_type == "reasoning":
+            return [{"role": "assistant", "content": json.dumps(message["summary"])}]
+        elif msg_type == "function_call_output":
+            return [
+                {
+                    "role": "tool",
+                    "content": message["output"],
+                    "tool_call_id": message["call_id"],
+                }
+            ]
+        compatible_keys = ["role", "content", "name", "tool_calls", "tool_call_id"]
+        if not message.get("content") and message.get("tool_calls"):
+            message["content"] = "tool call"
+        filtered = {k: v for k, v in message.items() if k in compatible_keys}
+        return [filtered] if filtered else []
 
-    workflow.add_node("agent", RunnableLambda(call_model))
-    workflow.add_node("tools", ChatAgentToolNode(tools))
+    def prep_msgs_for_llm(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Filter out message fields that are not compatible with LLM message formats and convert from Responses API to ChatCompletion compatible"""
+        chat_msgs = []
+        for msg in messages:
+            chat_msgs.extend(self._responses_to_cc(msg))
+        return chat_msgs
 
-    workflow.set_entry_point("agent")
-    workflow.add_conditional_edges(
-        "agent",
-        should_continue,
-        {
-            "continue": "tools",
-            "end": END,
-        },
-    )
-    workflow.add_edge("tools", "agent")
+    def call_llm(self) -> Generator[dict[str, Any], None, None]:
+        for chunk in self.model_serving_client.chat.completions.create(
+            model=self.llm_endpoint,
+            messages=self.prep_msgs_for_llm(self.messages),
+            tools=self.get_tool_specs(),
+            stream=True,
+        ):
+            yield chunk.to_dict()
 
-    return workflow.compile()
+    def handle_tool_calls(
+        self, tool_calls: list[dict[str, Any]]
+    ) -> Generator[ResponsesAgentStreamEvent, None, None]:
+        """
+        Execute tool calls, add them to the running message history, and return a ResponsesStreamEvent w/ tool output
+        """
+        for tool_call in tool_calls:
+            function = tool_call["function"]
+            args = json.loads(function["arguments"])
+            # Cast tool result to a string, since not all tools return as tring
+            result = str(self.execute_tool(tool_name=function["name"], args=args))
+            self.messages.append(
+                {"role": "tool", "content": result, "tool_call_id": tool_call["id"]}
+            )
+            yield ResponsesAgentStreamEvent(
+                type="response.output_item.done",
+                item=self.create_function_call_output_item(
+                    tool_call["id"],
+                    result,
+                ),
+            )
 
-
-class LangGraphChatAgent(ChatAgent):
-    def __init__(self, agent: CompiledStateGraph):
-        self.agent = agent
-
-    def predict(
+    def call_and_run_tools(
         self,
-        messages: list[ChatAgentMessage],
-        context: Optional[ChatContext] = None,
-        custom_inputs: Optional[dict[str, Any]] = None,
-    ) -> ChatAgentResponse:
-        request = {"messages": self._convert_messages_to_dict(messages)}
+        max_iter: int = 10,
+    ) -> Generator[ResponsesAgentStreamEvent, None, None]:
+        for _ in range(max_iter):
+            last_msg = self.messages[-1]
+            if tool_calls := last_msg.get("tool_calls", None):
+                yield from self.handle_tool_calls(tool_calls)
+            elif last_msg.get("role", None) == "assistant":
+                return
+            else:
+                # aggregate the chat completions stream to add to internal state
+                llm_content = ""
+                tool_calls = []
+                msg_id = None
+                for chunk in self.call_llm():
+                    delta = chunk["choices"][0]["delta"]
+                    msg_id = chunk.get("id", None)
+                    content = delta.get("content", None)
+                    if tc := delta.get("tool_calls"):
+                        if not tool_calls:  # only accomodate for single tool call right now
+                            tool_calls = tc
+                        else:
+                            tool_calls[0]["function"]["arguments"] += tc[0]["function"]["arguments"]
+                    elif content is not None:
+                        llm_content += content
+                        yield ResponsesAgentStreamEvent(
+                            **self.create_text_delta(content, item_id=msg_id)
+                        )
+                llm_output = {"role": "assistant", "content": llm_content, "tool_calls": tool_calls}
+                self.messages.append(llm_output)
 
-        messages = []
-        for event in self.agent.stream(request, stream_mode="updates"):
-            for node_data in event.values():
-                messages.extend(
-                    ChatAgentMessage(**msg) for msg in node_data.get("messages", [])
-                )
-        return ChatAgentResponse(messages=messages)
+                # yield an `output_item.done` `output_text` event that aggregates the stream
+                # this enables tracing and payload logging
+                if llm_output["content"]:
+                    yield ResponsesAgentStreamEvent(
+                        type="response.output_item.done",
+                        item=self.create_text_output_item(
+                            llm_output["content"], msg_id
+                        ),
+                    )
+                # yield an `output_item.done` `function_call` event for each tool call
+                if tool_calls := llm_output.get("tool_calls", None):
+                    for tool_call in tool_calls:
+                        yield ResponsesAgentStreamEvent(
+                            type="response.output_item.done",
+                            item=self.create_function_call_item(
+                                str(uuid4()),
+                                tool_call["id"],
+                                tool_call["function"]["name"],
+                                tool_call["function"]["arguments"],
+                            ),
+                        )
+
+        yield ResponsesAgentStreamEvent(
+            type="response.output_item.done",
+            item=self.create_text_output_item("Max iterations reached. Stopping.", str(uuid4())),
+        )
+
+    def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
+        outputs = [
+            event.item
+            for event in self.predict_stream(request)
+            if event.type == "response.output_item.done"
+        ]
+        return ResponsesAgentResponse(output=outputs, custom_outputs=request.custom_inputs)
 
     def predict_stream(
-        self,
-        messages: list[ChatAgentMessage],
-        context: Optional[ChatContext] = None,
-        custom_inputs: Optional[dict[str, Any]] = None,
-    ) -> Generator[ChatAgentChunk, None, None]:
-        request = {"messages": self._convert_messages_to_dict(messages)}
-        for event in self.agent.stream(request, stream_mode="updates"):
-            for node_data in event.values():
-                yield from (
-                    ChatAgentChunk(**{"delta": msg}) for msg in node_data["messages"]
-                )
+        self, request: ResponsesAgentRequest
+    ) -> Generator[ResponsesAgentStreamEvent, None, None]:
+        self.messages = self.prep_msgs_for_llm([i.model_dump() for i in request.input])
+        if SYSTEM_PROMPT:
+            self.messages.insert(0, {"role": "system", "content": SYSTEM_PROMPT})
+        yield from self.call_and_run_tools()
 
 
-# Create the agent object, and specify it as the agent object to use when
-# loading the agent back for inference via mlflow.models.set_model()
-agent = create_tool_calling_agent(llm, tools, system_prompt)
-AGENT = LangGraphChatAgent(agent)
+# Log the model using MLflow
+mlflow.openai.autolog()
+AGENT = ToolCallingAgent(llm_endpoint=LLM_ENDPOINT_NAME, tools=TOOL_INFOS)
 mlflow.models.set_model(AGENT)
