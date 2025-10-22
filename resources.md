@@ -2,7 +2,7 @@
 
 ## Course Links
 
-- <a href="https://login.databricks.com/signup?provider=DB_FREE_TIER&dbx_source=www&itm_data=dbx-web&l=en-EN&utm_source=deeplearning&utm_medium=web&utm_campaign=701vp00000soba6iah&tuuid=559965d9-f0e1-499b-83b7-d7120487fc3a&intent=SIGN_UP&rl_aid=ec7d08f2-837f-4540-b8c1-a0c0f6301277" target="_blank">Databricks Free Edition</a>: you can use this link to create your Databricks account. 
+- <a href="https://login.databricks.com/signup?provider=DB_FREE_TIER&dbx_source=www&itm_data=dbx-web&l=en-EN&utm_source=deeplearning&utm_medium=web&utm_campaign=701vp00000soba6iah&tuuid=559965d9-f0e1-499b-83b7-d7120487fc3a&intent=SIGN_UP&rl_aid=ec7d08f2-837f-4540-b8c1-a0c0f6301277" target="_blank">Databricks Free Edition</a>: You can use this link to create your Databricks Free Edition account.
 - <a href="https://github.com/https-deeplearning-ai/sc-agent-governance" target="_blank">Course Repo</a>: 
   - Fork the repo;
   - Follow the steps in the next lesson to clone your forked repo into your Databricks workspace.
