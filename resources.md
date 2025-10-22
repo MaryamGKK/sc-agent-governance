@@ -14,5 +14,8 @@
 - <a href="https://docs.databricks.com/aws/en/data-governance/unity-catalog/" target="_blank">Databricks Unity Catalog</a>
 - <a href="https://mlflow.org/docs/3.1.3/genai/" target="_blank">Databricks MLflow</a>
 - <a href="https://docs.databricks.com/aws/en/admin/users-groups/#identity-model" target="_blank">Databricks Identities</a>
+- <a href="https://docs.databricks.com/aws/en/data-governance/unity-catalog/manage-privileges/admin-privileges#gsc.tab=0" target="_blank"> Admin Privileges</a>
+- <a href="https://docs.databricks.com/aws/en/data-governance/unity-catalog/access-control#gsc.tab=0" target="_blank">Access Control in Unity Catalog</a>
+- <a href="https://docs.databricks.com/aws/en/data-governance/unity-catalog/best-practices#gsc.tab=0">Unity Catalog Best Practices</a>
 - <a href="https://docs.databricks.com/aws/en/generative-ai/agent-framework/author-agent" target="_blank">ResponsesAgent</a>
 - <a href="https://docs.databricks.com/aws/en/ai-gateway/" target="_blank">AI Gateway</a>
