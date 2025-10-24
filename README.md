@@ -9,7 +9,6 @@ An interactive Streamlit web application that connects to a **Databricks model s
 - 💬 Chat with an HR data analyst agent
 - 📊 Automatically displays structured (CSV) data responses as tables
 - 🔒 Secure environment variable handling (no token exposure)
-- 🧠 Built-in conversation memory
 - 🖥️ Minimalist, distraction-free UI
 
 ## 🧠 Example Query
