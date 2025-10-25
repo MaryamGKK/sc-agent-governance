@@ -2,6 +2,10 @@
 
 An interactive Streamlit web application that connects to a **Databricks model serving endpoint** to provide intelligent HR data analysis in a conversational interface — similar to the Databricks Playground.
 
+## 🌐 Live Demo
+
+**Try the enhanced HR Data Analyst Assistant:** [https://hrdataanalyst.streamlit.app/](https://hrdataanalyst.streamlit.app/)
+
 ---
 
 ## 🚀 Features
