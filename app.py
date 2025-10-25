@@ -10,7 +10,7 @@ from datetime import datetime
 from io import StringIO
 from dotenv import load_dotenv
 import base64
-from typing import Dict, List, Any, Optional
+from typing import Dict, List, Any, Optional, Generator
 
 # --- Load environment variables ---
 load_dotenv()
